@@ -1,0 +1,227 @@
+From: Xiaoxue <xiaoxue@users.noreply.github.com>
+Date: Tue, 19 May 2026 09:30:00 +0800
+Subject: [PATCH] rockchip: add device tree for Lenovo ECB-PR51 (RK3568)
+
+Add device tree source for the Lenovo ECB-PR51 (Leez SBC PR51) single
+board computer based on Rockchip RK3568.
+
+Specification:
+- Rockchip RK3568 quad-core Cortex-A55 @ 2.0 GHz
+- 2/4/8 GB LPDDR4 RAM
+- 16/32/64/128 GB eMMC
+- MicroSD card slot
+- Dual Gigabit Ethernet (RGMII)
+- PCIe 2.1 x2 slot
+- HDMI, eDP, LVDS display outputs
+- 2x USB 2.0, 1x USB 3.0, USB Type-C
+- MIPI CSI camera input
+- 40-pin GPIO header
+
+Signed-off-by: Xiaoxue <xiaoxue@users.noreply.github.com>
+
+--- /dev/null
++++ b/target/linux/rockchip/dts/rk356x/rk3568-ecb-pr51.dts
+@@ -0,0 +1,241 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * Device Tree file for Lenovo ECB-PR51 (Leez SBC PR51) - RK3568
++ */
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/rockchip.h>
++#include <dt-bindings/soc/rockchip,vop2.h>
++#include "rk3568.dtsi"
++
++/ {
++	model = "Lenovo ECB-PR51";
++	compatible = "lenovo,ecb-pr51", "rockchip,rk3568";
++
++	aliases {
++		ethernet0 = &gmac0;
++		ethernet1 = &gmac1;
++		mmc0 = &sdmmc0;
++		mmc1 = &sdhci;
++		serial0 = &uart2;
++	};
++
++	chosen {
++		stdout-path = "serial2:1500000n8";
++	};
++
++	vcc3v3_sys: vcc3v3-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc3v3_sys";
++		regulator-always-on;
++		regulator-boot-on;
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++	};
++
++	vcc5v0_sys: vcc5v0-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc5v0_sys";
++		regulator-always-on;
++		regulator-boot-on;
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++	};
++
++	vcc3v3_pcie: vcc3v3-pcie-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc3v3_pcie";
++		regulator-always-on;
++		regulator-boot-on;
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-0 {
++			gpios = <&gpio0 RK_PA5 GPIO_ACTIVE_HIGH>;
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			linux,default-trigger = "heartbeat";
++		};
++	};
++};
++
++&cpu0 {
++	cpu-supply = <&vdd_cpu>;
++};
++
++&gmac0 {
++	phy-mode = "rgmii";
++	clock_in_out = "output";
++	snps,reset-gpio = <&gpio3 RK_PC2 GPIO_ACTIVE_LOW>;
++	snps,reset-active-low;
++	snps,reset-delays-us = <0 10000 50000>;
++	tx_delay = <0x28>;
++	rx_delay = <0x11>;
++	phy-handle = <&rgmii_phy0>;
++	status = "okay";
++};
++
++&gmac1 {
++	phy-mode = "rgmii";
++	clock_in_out = "output";
++	snps,reset-gpio = <&gpio3 RK_PC7 GPIO_ACTIVE_LOW>;
++	snps,reset-active-low;
++	snps,reset-delays-us = <0 10000 50000>;
++	tx_delay = <0x28>;
++	rx_delay = <0x11>;
++	phy-handle = <&rgmii_phy1>;
++	status = "okay";
++};
++
++&mdio0 {
++	rgmii_phy0: ethernet-phy@0 {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <0>;
++	};
++};
++
++&mdio1 {
++	rgmii_phy1: ethernet-phy@1 {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <1>;
++	};
++};
++
++&i2c0 {
++	status = "okay";
++
++	vdd_cpu: regulator@1c {
++		compatible = "tcs,tcs4525";
++		reg = <0x1c>;
++		fcs,suspend-voltage-selector = <1>;
++		regulator-name = "vdd_cpu";
++		regulator-min-microvolt = <800000>;
++		regulator-max-microvolt = <1150000>;
++		regulator-ramp-delay = <2300>;
++		regulator-always-on;
++		regulator-boot-on;
++		regulator-initial-mode = <0x2>;
++	};
++};
++
++&i2c1 {
++	status = "okay";
++};
++
++&pcie2x1 {
++	reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
++	vpcie3v3-supply = <&vcc3v3_pcie>;
++	status = "okay";
++};
++
++&pinctrl {
++	leds {
++		led_gpio: led-gpio {
++			rockchip,pins = <0 RK_PA5 RK_FUNC_GPIO &pcfg_pull_none>;
++		};
++	};
++};
++
++&pmu_io_domains {
++	status = "okay";
++};
++
++&sdhci {
++	bus-width = <8>;
++	max-frequency = <200000000>;
++	non-removable;
++	pinctrl-names = "default";
++	pinctrl-0 = <&emmc_bus8 &emmc_cmd &emmc_clk>;
++	status = "okay";
++};
++
++&sdmmc0 {
++	bus-width = <4>;
++	cap-sd-highspeed;
++	cd-gpios = <&gpio0 RK_PA4 GPIO_ACTIVE_LOW>;
++	disable-wp;
++	pinctrl-names = "default";
++	pinctrl-0 = <&sdmmc0_bus4 &sdmmc0_cmd &sdmmc0_clk &sdmmc0_det>;
++	vmmc-supply = <&vcc3v3_sys>;
++	status = "okay";
++};
++
++&uart2 {
++	status = "okay";
++};
++
++&usb_host0_ehci {
++	status = "okay";
++};
++
++&usb_host0_ohci {
++	status = "okay";
++};
++
++&usb_host1_ehci {
++	status = "okay";
++};
++
++&usb_host1_ohci {
++	status = "okay";
++};
++
++&usb2phy0 {
++	status = "okay";
++};
++
++&usb2phy1 {
++	status = "okay";
++};
++
++&usb2phy0_host {
++	phy-supply = <&vcc5v0_sys>;
++};
++
++&usb2phy1_host {
++	phy-supply = <&vcc5v0_sys>;
++};

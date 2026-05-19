@@ -1,0 +1,16 @@
+# Large binaries - keep in docs/ for local reference
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Temp
+/tmp/

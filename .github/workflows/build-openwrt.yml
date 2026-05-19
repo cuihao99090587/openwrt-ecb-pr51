@@ -1,0 +1,205 @@
+name: Build OpenWrt for Lenovo ECB-PR51
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'OpenWrt branch'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - openwrt-24.10
+
+  push:
+    branches: [ main ]
+    paths:
+      - 'dts/**'
+      - 'patches/**'
+      - '.github/workflows/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENWRT_REPO: https://github.com/openwrt/openwrt.git
+  OPENWRT_BRANCH: ${{ inputs.branch || 'main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout build config
+        uses: actions/checkout@v4
+        with:
+          path: builder
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget python3 \
+            uuid-dev libgnutls28-dev libjson-c-dev libzstd-dev \
+            device-tree-compiler python3-distutils python3-pip upx-ucl \
+            python3-yaml
+          sudo apt-get clean
+
+      - name: Checkout OpenWrt source
+        run: |
+          git clone --depth 1 -b ${{ env.OPENWRT_BRANCH }} \
+            ${{ env.OPENWRT_REPO }} openwrt
+
+      - name: Apply ECB-PR51 device tree
+        run: |
+          DTS_DIR=openwrt/target/linux/rockchip/dts/rk356x
+          mkdir -p "$DTS_DIR"
+          cp builder/dts/rk3568-ecb-pr51.dts "$DTS_DIR/"
+          # Add to DTS Makefile if not already there
+          grep -q "ecb-pr51" "$DTS_DIR/Makefile" || \
+            sed -i '/dtb-y +=/a\\trk3568-ecb-pr51.dtb \\' "$DTS_DIR/Makefile"
+          echo "=== DTS Makefile ==="
+          cat "$DTS_DIR/Makefile"
+
+      - name: Apply OpenWrt patches
+        run: |
+          cd openwrt
+          for patch in ../builder/patches/*.patch; do
+            [ -f "$patch" ] || continue
+            echo "=== Applying: $(basename $patch) ==="
+            patch -p1 < "$patch" || {
+              echo "WARNING: patch $(basename $patch) failed, may already be applied"
+            }
+          done
+          echo "=== Image Makefile ==="
+          grep -A 10 "lenovo\|ecb-pr51" target/linux/rockchip/image/armv8.mk || true
+
+      - name: Configure build
+        run: |
+          cd openwrt
+          # Start with rockchip target defaults
+          cat > .config << 'CONFIGEOF'
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          CONFIG_TARGET_rockchip_armv8_DEVICE_lenovo_ecb-pr51=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=512
+
+          # LuCI (Web UI - Chinese)
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-mod-admin-full=y
+          CONFIG_PACKAGE_luci-theme-bootstrap=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+
+          # Network
+          CONFIG_PACKAGE_dropbear=y
+          CONFIG_PACKAGE_firewall4=y
+          CONFIG_PACKAGE_nftables=y
+          CONFIG_PACKAGE_kmod-nft-offload=y
+          CONFIG_PACKAGE_kmod-ipt-offload=y
+          CONFIG_PACKAGE_dnsmasq-full=y
+          CONFIG_PACKAGE_ip-full=y
+
+          # Hardware drivers
+          CONFIG_PACKAGE_kmod-r8169=y
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_kmod-usb-storage=y
+          CONFIG_PACKAGE_kmod-usb-storage-uas=y
+          CONFIG_PACKAGE_kmod-ata-ahci=y
+          CONFIG_PACKAGE_kmod-pcie-rockchip=y
+          CONFIG_PACKAGE_kmod-sdhci=y
+
+          # USB net (USB LAN adapters)
+          CONFIG_PACKAGE_kmod-usb-net=y
+          CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+          CONFIG_PACKAGE_kmod-usb-net-asix=y
+          CONFIG_PACKAGE_kmod-usb-net-asix-ax88179=y
+
+          # QoS / SQM
+          CONFIG_PACKAGE_kmod-sched-cake=y
+          CONFIG_PACKAGE_sqm-scripts=y
+
+          # Utilities
+          CONFIG_PACKAGE_blockd=y
+          CONFIG_PACKAGE_blkdiscard=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_iperf3=y
+
+          # U-boot for RK3568
+          CONFIG_PACKAGE_u-boot-rock-3a-rk3568=y
+          CONFIG_PACKAGE_trusted-firmware-a-rk3568=y
+          CONFIG_PACKAGE_rkbin=y
+          CONFIGEOF
+
+          make defconfig 2>&1 | tail -20
+
+      - name: Download source & build toolchain
+        run: |
+          cd openwrt
+          make download 2>&1 | tail -10
+          make -j$(nproc) tools/install 2>&1 | tail -10
+          make -j$(nproc) toolchain/install 2>&1 | tail -10
+
+      - name: Build target (kernel + packages + images)
+        id: build
+        run: |
+          cd openwrt
+          make -j$(nproc) 2>&1 | tee build.log | tail -50
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Show build output
+        if: always()
+        run: |
+          cd openwrt
+          echo "=== Build log (last 50 lines) ==="
+          tail -50 build.log 2>/dev/null || true
+          echo ""
+          echo "=== Built firmware ==="
+          find bin/targets/rockchip/ -type f -name '*.gz' -o -name '*.img' -o -name '*.bin' 2>/dev/null | sort
+          echo ""
+          echo "=== Image directory ==="
+          ls -lhR bin/targets/rockchip/ 2>/dev/null || echo "(empty)"
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-ecb-pr51-${{ env.OPENWRT_BRANCH }}
+          path: openwrt/bin/targets/rockchip/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create release
+        if: github.ref == 'refs/heads/main' && success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "OpenWrt ECB-PR51 Build #${{ github.run_number }}"
+          body: |
+            Auto-built OpenWrt firmware for **Lenovo ECB-PR51** (Leez SBC PR51 / RK3568)
+
+            - Branch: `${{ env.OPENWRT_BRANCH }}`
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            ## 🔥 刷机说明
+            1. 到 Artifacts 下载 zip 包，解压
+            2. 找到 `rockchip/armv8/` 目录下的 `openwrt-...-lenovo_ecb-pr51-sysupgrade.img.gz`
+            3. 解压得 `.img` 文件
+            4. 用 **BalenaEtcher** 或 `dd` 写入 TF 卡 / eMMC
+            5. 插入 ECB-PR51，从 TF 卡启动
+            6. 默认 IP: `192.168.1.1`，默认无密码
+
+            > **注意:** 使用了 rock-3a 的 U-Boot，如果启动有问题请反馈
+          files: |
+            openwrt/bin/targets/rockchip/**/*.gz
+          generate_release_notes: false
+          make_latest: true
