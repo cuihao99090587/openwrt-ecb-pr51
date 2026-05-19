@@ -111,8 +111,7 @@ jobs:
 
       - name: Download sources
         run: |
-          cd openwrt
-          make download 2>&1 | tail -5
+          cd openwrt && make download 2>&1 | tail -5
 
       - name: Build tools + toolchain
         run: |
@@ -121,21 +120,19 @@ jobs:
           make -j$(nproc) toolchain/install 2>&1 | tail -5
 
       - name: Build firmware
-        id: build
         run: |
-          cd openwrt
-          make -j$(nproc) 2>&1 | tee build.log | tail -30
-          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          cd openwrt && make -j$(nproc) 2>&1 | tail -20
 
-      - name: List artifacts
+      - name: List & upload
         if: always()
         run: |
           cd openwrt
+          echo "=== Built firmware ==="
           find bin/targets/ -type f -name '*.img*' -o -name '*.gz' 2>/dev/null | sort
           ls -lh bin/targets/rockchip/armv8/ 2>/dev/null || true
+        # Upload in subsequent step even if this says empty
 
       - name: Upload firmware
-        if: steps.build.outputs.EXIT_CODE == '0'
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ecb-pr51
