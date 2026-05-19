@@ -13,10 +13,6 @@ on:
           - openwrt-24.10
   push:
     branches: [ main ]
-    paths:
-      - 'dts/**'
-      - 'patches/**'
-      - '.github/workflows/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,7 +34,6 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
           sudo apt-get clean
-          df -h /
 
       - name: Install dependencies
         run: |
@@ -47,74 +42,28 @@ jobs:
             gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
             python3 python3-setuptools python3-pip python3-yaml rsync swig \
             unzip zlib1g-dev file wget uuid-dev libgnutls28-dev libjson-c-dev \
-            libzstd-dev device-tree-compiler python3-pyelftools
+            libzstd-dev device-tree-compiler
+          pip3 install pyelftools 2>/dev/null || true
           sudo apt-get clean
 
       - name: Checkout OpenWrt source
         run: |
           git clone --depth 1 -b ${{ env.OPENWRT_BRANCH }} \
             ${{ env.OPENWRT_REPO }} openwrt
-          echo "Kernel patches dir:"
-          ls -d openwrt/target/linux/rockchip/patches-* 2>/dev/null
 
-      - name: Apply ECB-PR51 DTS as kernel patch
+      - name: Apply ECB-PR51 DTS patch
         run: |
-          PATCH_DIR=$(ls -d openwrt/target/linux/rockchip/patches-* 2>/dev/null | tail -1)
-          if [ -z "$PATCH_DIR" ]; then exit 1; fi
-          echo "Using patches dir: $PATCH_DIR"
+          PATCH_DIR=$(ls -d openwrt/target/linux/rockchip/patches-* | tail -1)
+          echo "Patch dir: $PATCH_DIR"
           cp builder/patches/100-arm64-dts-rockchip-add-lenovo-ecb-pr51.patch "$PATCH_DIR/"
           cp builder/patches/101-arm64-dts-rockchip-add-ecb-pr51-makefile.patch "$PATCH_DIR/"
-          echo "Patches:"
-          ls "$PATCH_DIR/" | grep ecb
 
-      - name: Add ECB-PR51 to image config
+      - name: Add device to image config
         run: |
-          IMAGE_MK=openwrt/target/linux/rockchip/image/armv8.mk
-          if grep -q "lenovo_ecb-pr51" "$IMAGE_MK"; then
-            echo "Already present"
-          else
-            # Insert the device definition AFTER the rk3568 endef block
-            python3 << 'PYEOF'
-import re
-
-with open("openwrt/target/linux/rockchip/image/armv8.mk") as f:
-    content = f.read()
-
-# Find the end of the rk3568 block and insert after it
-insert = """
-define Device/lenovo_ecb-pr51
-  $(Device/rk3568)
-  DEVICE_VENDOR := Lenovo
-  DEVICE_MODEL := ECB-PR51
-  DEVICE_DTS := rk3568-ecb-pr51
-  UBOOT_DEVICE_NAME := rock-3a-rk3568
-  DEVICE_PACKAGES := kmod-r8169 blkdiscard
-endef
-TARGET_DEVICES += lenovo_ecb-pr51
-"""
-
-# Find first endef after "Device/rk3568" definition
-lines = content.split('\n')
-new_lines = []
-inserted = False
-for i, line in enumerate(lines):
-    new_lines.append(line)
-    if not inserted and line.strip() == 'endef' and i > 0:
-        # Check if this endef closes the rk3568 block
-        for j in range(i-1, max(0, i-5), -1):
-            if 'Device/rk3568' in lines[j]:
-                new_lines.append('')
-                new_lines.append(insert.strip())
-                inserted = True
-                break
-
-content = '\n'.join(new_lines)
-with open("openwrt/target/linux/rockchip/image/armv8.mk", "w") as f:
-    f.write(content)
-PYEOF
-          fi
-          echo "=== Image config result ==="
-          grep -A 10 "lenovo\|ecb-pr51" "$IMAGE_MK" || echo "NOT FOUND"
+          python3 builder/scripts/add-image-config.py \
+            openwrt/target/linux/rockchip/image/armv8.mk
+          grep -A 8 "lenovo\|ecb-pr51" \
+            openwrt/target/linux/rockchip/image/armv8.mk
 
       - name: Configure build
         run: |
@@ -124,13 +73,11 @@ PYEOF
           CONFIG_TARGET_rockchip_armv8=y
           CONFIG_TARGET_rockchip_armv8_DEVICE_lenovo_ecb-pr51=y
           CONFIG_TARGET_ROOTFS_PARTSIZE=512
-
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-base=y
           CONFIG_PACKAGE_luci-mod-admin-full=y
           CONFIG_PACKAGE_luci-theme-bootstrap=y
           CONFIG_LUCI_LANG_zh_Hans=y
-
           CONFIG_PACKAGE_dropbear=y
           CONFIG_PACKAGE_firewall4=y
           CONFIG_PACKAGE_nftables=y
@@ -138,7 +85,6 @@ PYEOF
           CONFIG_PACKAGE_kmod-ipt-offload=y
           CONFIG_PACKAGE_dnsmasq-full=y
           CONFIG_PACKAGE_ip-full=y
-
           CONFIG_PACKAGE_kmod-r8169=y
           CONFIG_PACKAGE_kmod-usb3=y
           CONFIG_PACKAGE_kmod-usb-storage=y
@@ -146,62 +92,53 @@ PYEOF
           CONFIG_PACKAGE_kmod-ata-ahci=y
           CONFIG_PACKAGE_kmod-pcie-rockchip=y
           CONFIG_PACKAGE_kmod-sdhci=y
-
           CONFIG_PACKAGE_kmod-usb-net=y
           CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
           CONFIG_PACKAGE_kmod-usb-net-asix=y
           CONFIG_PACKAGE_kmod-usb-net-asix-ax88179=y
-
           CONFIG_PACKAGE_kmod-sched-cake=y
           CONFIG_PACKAGE_sqm-scripts=y
-
           CONFIG_PACKAGE_blockd=y
           CONFIG_PACKAGE_blkdiscard=y
           CONFIG_PACKAGE_openssh-sftp-server=y
           CONFIG_PACKAGE_htop=y
           CONFIG_PACKAGE_iperf3=y
-
           CONFIG_PACKAGE_u-boot-rock-3a-rk3568=y
           CONFIG_PACKAGE_trusted-firmware-a-rk3568=y
           CONFIG_PACKAGE_rkbin=y
           CONFIGEOF
-
-          make defconfig 2>&1 | tail -10
-          # Also need to set the Python elftools prereq manually
-          pip3 install pyelftools 2>/dev/null || true
+          make defconfig 2>&1 | tail -5
 
       - name: Download sources
         run: |
-          cd openwrt && pip3 install pyelftools 2>/dev/null; make download 2>&1 | tail -10
+          cd openwrt
+          make download 2>&1 | tail -5
 
       - name: Build tools + toolchain
         run: |
           cd openwrt
-          make -j$(nproc) tools/install 2>&1 | tail -10
-          make -j$(nproc) toolchain/install 2>&1 | tail -10
+          make -j$(nproc) tools/install 2>&1 | tail -5
+          make -j$(nproc) toolchain/install 2>&1 | tail -5
 
       - name: Build firmware
         id: build
         run: |
           cd openwrt
-          make -j$(nproc) 2>&1 | tee build.log | tail -50
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          make -j$(nproc) 2>&1 | tee build.log | tail -30
+          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
       - name: List artifacts
         if: always()
         run: |
           cd openwrt
-          echo "=== Built firmware ==="
-          find bin/targets/ -type f -name '*.img*' -o -name '*.bin' -o -name '*.gz' 2>/dev/null | sort
-          echo ""
-          echo "=== Size ==="
-          find bin/targets/ -type f -exec ls -lh {} \; 2>/dev/null
+          find bin/targets/ -type f -name '*.img*' -o -name '*.gz' 2>/dev/null | sort
+          ls -lh bin/targets/rockchip/armv8/ 2>/dev/null || true
 
       - name: Upload firmware
-        if: steps.build.outputs.exit_code == '0'
+        if: steps.build.outputs.EXIT_CODE == '0'
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-ecb-pr51-${{ env.OPENWRT_BRANCH }}
+          name: openwrt-ecb-pr51
           path: openwrt/bin/targets/rockchip/
           retention-days: 30
           if-no-files-found: warn
