@@ -1,0 +1,73 @@
+Lenovo ECB-PR51 OpenWrt 线刷指南
+=================================
+
+一、从 Armbian/Android 系统写入 eMMC（推荐，无需拆机）
+------------------------------------------------
+1. 下载固件到板子上：
+   wget -O /tmp/openwrt.img.gz <GitHub Actions 下载链接>
+   
+2. 确定 eMMC 设备：
+   ls /dev/mmcblk*
+   # 通常 mmcblk1 是 eMMC，mmcblk0 是 TF 卡
+
+3. 解压并写入：
+   gunzip /tmp/openwrt.img.gz
+   sudo dd if=/tmp/openwrt.img of=/dev/mmcblk1 bs=4M status=progress
+   sync
+   然后拔电，从 eMMC 启动
+
+4. 默认 IP: 192.168.1.1，无密码
+
+
+二、rkdeveloptool 线刷（需要进入 Maskrom 模式）
+-----------------------------------------------
+1. 安装 rkdeveloptool：
+   sudo apt install rkdeveloptool   # Debian/Ubuntu
+   或从 https://github.com/rockchip-linux/rkdeveloptool 编译
+
+2. 让 ECB-PR51 进入 Maskrom 模式：
+   - 断开所有电源
+   - 按住板上的 Maskrom 按钮（或短接 eMMC CLK 到 GND）
+   - 用 USB-A to USB-A 线连接 PC 的 USB 口
+   - 上电
+   - 确认识别：rkdeveloptool ld
+
+3. 线刷：
+   cd <解压后的 flash-pkg 目录>
+   
+   a) 下载 bootloader（从固件提取的 idbloader）：
+      rkdeveloptool db idbloader.img
+   
+   b) 写入 U-Boot：
+      rkdeveloptool wl 0x4000 uboot.img
+   
+   c) 写入 Boot（kernel + DTB）：
+      rkdeveloptool wl 0x8000 boot.img
+   
+   d) 写入 Rootfs：
+      rkdeveloptool wl 0x200000 rootfs.img
+   
+   或直接写完整镜像（最简单）：
+      rkdeveloptool db idbloader.img
+      rkdeveloptool wl 0x0 openwrt-ecb-pr51-raw.img
+      rkdeveloptool rd
+
+4. 重启：
+   rkdeveloptool rd
+
+5. 默认 IP: 192.168.1.1，无密码
+
+
+三、恢复出厂 U-Boot
+-------------------
+如果刷了 OpenWrt 后启动不了，从 PC 用 rkdeveloptool 恢复：
+1. 进入 Maskrom 模式（步骤同上）
+2. 从 Armbian 备份恢复，或刷回 Armbian 的 loader
+
+
+注意事项
+---------
+- 线刷至少需要 1GB 空余 eMMC 空间
+- OpenWrt 固件 rootfs 约 512MB
+- 刷机有风险，建议先备份现有 eMMC：
+  sudo dd if=/dev/mmcblk1 of=/tmp/emmc-backup.img bs=4M status=progress
