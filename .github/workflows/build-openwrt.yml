@@ -5,7 +5,6 @@ on:
     inputs:
       branch:
         default: 'main'
-        description: 'OpenWrt branch'
         required: true
         type: choice
         options:
@@ -45,21 +44,25 @@ jobs:
             libzstd-dev device-tree-compiler parted dosfstools
           pip3 install pyelftools 2>/dev/null || true
           sudo apt-get clean
+          df -h /
 
       - name: Checkout OpenWrt source
         run: |
           git clone --depth 1 -b ${{ env.OPENWRT_BRANCH }} \
             ${{ env.OPENWRT_REPO }} openwrt
+          echo "Kernel version:"; ls -d openwrt/target/linux/rockchip/patches-*
 
-      - name: Apply ECB-PR51 DTS patch
+      - name: Apply ECB-PR51 DTS patches
         run: |
           PATCH_DIR=$(ls -d openwrt/target/linux/rockchip/patches-* | tail -1)
-          cp builder/patches/100-arm64-dts-rockchip-add-lenovo-ecb-pr51.patch "$PATCH_DIR/"
-          cp builder/patches/101-arm64-dts-rockchip-add-ecb-pr51-makefile.patch "$PATCH_DIR/"
+          cp -v builder/patches/100-arm64-dts-rockchip-add-lenovo-ecb-pr51.patch "$PATCH_DIR/"
+          cp -v builder/patches/101-arm64-dts-rockchip-add-ecb-pr51-makefile.patch "$PATCH_DIR/"
 
       - name: Add device to image config
         run: |
           python3 builder/scripts/add-image-config.py \
+            openwrt/target/linux/rockchip/image/armv8.mk
+          grep -A 8 "lenovo\|ecb-pr51" \
             openwrt/target/linux/rockchip/image/armv8.mk
 
       - name: Configure build
@@ -116,87 +119,86 @@ jobs:
           make -j$(nproc) tools/install 2>&1 | tail -5
           make -j$(nproc) toolchain/install 2>&1 | tail -5
 
-      - name: Build firmware
+      - name: Build kernel & packages
         run: |
-          cd openwrt && make -j$(nproc) 2>&1 | tail -20
+          cd openwrt
+          # Build kernel first (with verbose on failure)
+          make -j$(nproc) target/linux/compile 2>&1 | tee kernel-build.log | tail -20
+          # Build packages  
+          make -j$(nproc) package/compile 2>&1 | tee packages-build.log | tail -20
 
-      - name: Package for rkdeveloptool (line flash)
+      - name: Build final images
+        run: |
+          cd openwrt
+          # Build final images with verbose output
+          make -j$(nproc) 2>&1 | tee final-build.log | tail -50
+          echo "Build done"
+
+      - name: Extract logs on failure
+        if: failure()
+        run: |
+          cd openwrt
+          echo "=== Kernel error detail ==="
+          head -200 kernel-build.log 2>/dev/null || true
+          echo "=== Kernel build errors ==="
+          grep -i "error\|warning\|failed\|Error" kernel-build.log 2>/dev/null | head -30 || true
+          find build_dir -name "*.log" -path "*/linux*" 2>/dev/null | head -5
+          ls -la build_dir/target-*/linux-*/linux-*/.modules 2>/dev/null || true
+          # Check dmesg from dtc compilation
+          find build_dir -name "*.dtb" -path "*rockchip*" 2>/dev/null | head -10 || true
+          find build_dir -name "ecb*" 2>/dev/null | head -10 || true
+
+      - name: Package for rkdeveloptool
+        if: success()
         run: |
           cd openwrt
           mkdir -p flash-pkg
-          OUTDIR=bin/targets/rockchip/armv8
-          IMG=$(ls $OUTDIR/*-sysupgrade.img.gz 2>/dev/null | head -1)
+          IMG=$(find bin/targets/ -name '*sysupgrade.img.gz' | head -1)
           if [ -z "$IMG" ]; then
-            echo "No image found, looking in subdirs..."
-            IMG=$(find bin/targets/ -name '*sysupgrade.img.gz' | head -1)
+            echo "No image found"; find bin/targets/ -type f; exit 1
           fi
-          echo "Source image: $IMG"
-          [ -z "$IMG" ] && exit 1
+          echo "Source: $IMG"
           gunzip -kf "$IMG"
-          RAW_IMG="${IMG%.gz}"
-          echo "Raw image: $RAW_IMG"
-          ls -lh "$RAW_IMG"
+          RAW="${IMG%.gz}"
+          ls -lh "$RAW"
 
-          # Set up loop device
           sudo modprobe loop
-          LOOP=$(sudo losetup -f --show "$RAW_IMG")
-          echo "Loop device: $LOOP"
-          sudo partprobe $LOOP
-          ls -la /dev/${LOOP##/dev/}*
-
-          # Dump partition info
+          LOOP=$(sudo losetup -f --show "$RAW")
+          sudo partprobe $LOOP 2>/dev/null || true
           sudo fdisk -l $LOOP > flash-pkg/partition-table.txt
           cat flash-pkg/partition-table.txt
 
-          # Extract idbloader (first 8MB includes u-boot SPL + DDR init)
-          # For rkdeveloptool: idbloader at 0x40 (sector 64 = 32KB)
+          # Extract components
           sudo dd if=$LOOP of=flash-pkg/idbloader.img bs=512 count=16384 2>/dev/null
-          # Extract u-boot.itb (from 8MiB offset = sector 16384)
           sudo dd if=$LOOP of=flash-pkg/uboot.img bs=512 skip=16384 count=16384 2>/dev/null
 
-          # Extract boot partition (starts after 32MB padding)
-          # Get actual partition start from fdisk
-          START_BOOT=$(sudo fdisk -l $LOOP | grep "${LOOP##*/}p1" | awk '{print $2}')
-          START_ROOTFS=$(sudo fdisk -l $LOOP | grep "${LOOP##*/}p2" | awk '{print $2}')
-          echo "Boot partition starts at sector: $START_BOOT"
-          echo "Rootfs partition starts at sector: $START_ROOTFS"
-          
-          if [ -n "$START_BOOT" ]; then
-            sudo dd if=$LOOP of=flash-pkg/boot.img bs=512 skip=$START_BOOT count=$((START_ROOTFS - START_BOOT)) 2>/dev/null
-          fi
-          if [ -n "$START_ROOTFS" ]; then
-            # Rootfs size = total image size - rootfs start
-            TOTAL_SECTORS=$(sudo fdisk -l $LOOP | grep "Disk ${LOOP}" | awk '{print $7}')
-            # Use actual partition size from fdisk
-            ROOTFS_SIZE=$(sudo fdisk -l $LOOP | grep "${LOOP##*/}p2" | awk '{print $4}')
-            sudo dd if=$LOOP of=flash-pkg/rootfs.img bs=512 skip=$START_ROOTFS count=$ROOTFS_SIZE 2>/dev/null
-          fi
+          P1=$(sudo fdisk -l $LOOP | grep "${LOOP##*/}p1" | awk '{print $2}')
+          P2=$(sudo fdisk -l $LOOP | grep "${LOOP##*/}p2" | awk '{print $2}')
+          P2S=$(sudo fdisk -l $LOOP | grep "${LOOP##*/}p2" | awk '{print $4}')
 
-          # Also create the complete raw image (for dd method)
-          cp "$RAW_IMG" flash-pkg/openwrt-ecb-pr51-raw.img
-
-          # Clean up
+          if [ -n "$P1" ] && [ -n "$P2" ]; then
+            sudo dd if=$LOOP of=flash-pkg/boot.img bs=512 skip=$P1 count=$((P2 - P1)) 2>/dev/null
+          fi
+          if [ -n "$P2" ] && [ -n "$P2S" ]; then
+            sudo dd if=$LOOP of=flash-pkg/rootfs.img bs=512 skip=$P2 count=$P2S 2>/dev/null
+          fi
+          cp "$RAW" flash-pkg/openwrt-ecb-pr51-raw.img
           sudo losetup -d $LOOP
-
-          # Show results
-          echo ""
-          echo "=== Flash package contents ==="
           ls -lh flash-pkg/
 
-      - name: Upload firmware
+      - name: Upload flash package
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ecb-pr51
           path: openwrt/flash-pkg/
           retention-days: 30
-          if-no-files-found: warn
 
-      - name: Also upload full image as backup
+      - name: Upload full images as backup
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ecb-pr51-full-img
-          path: |
-            openwrt/bin/targets/rockchip/armv8/*.gz
-            openwrt/bin/targets/rockchip/armv8/*.img
+          path: openwrt/bin/targets/rockchip/armv8/*.gz
           retention-days: 30
           if-no-files-found: warn
