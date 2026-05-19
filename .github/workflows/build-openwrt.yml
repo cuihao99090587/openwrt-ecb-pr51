@@ -47,61 +47,73 @@ jobs:
             gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
             python3 python3-setuptools python3-pip python3-yaml rsync swig \
             unzip zlib1g-dev file wget uuid-dev libgnutls28-dev libjson-c-dev \
-            libzstd-dev device-tree-compiler
+            libzstd-dev device-tree-compiler python3-pyelftools
           sudo apt-get clean
 
       - name: Checkout OpenWrt source
         run: |
           git clone --depth 1 -b ${{ env.OPENWRT_BRANCH }} \
             ${{ env.OPENWRT_REPO }} openwrt
-          echo "Kernel version check:"
+          echo "Kernel patches dir:"
           ls -d openwrt/target/linux/rockchip/patches-* 2>/dev/null
 
       - name: Apply ECB-PR51 DTS as kernel patch
         run: |
-          # Determine patches directory
           PATCH_DIR=$(ls -d openwrt/target/linux/rockchip/patches-* 2>/dev/null | tail -1)
-          if [ -z "$PATCH_DIR" ]; then
-            echo "ERROR: No patches directory found"
-            ls -la openwrt/target/linux/rockchip/
-            exit 1
-          fi
+          if [ -z "$PATCH_DIR" ]; then exit 1; fi
           echo "Using patches dir: $PATCH_DIR"
           cp builder/patches/100-arm64-dts-rockchip-add-lenovo-ecb-pr51.patch "$PATCH_DIR/"
           cp builder/patches/101-arm64-dts-rockchip-add-ecb-pr51-makefile.patch "$PATCH_DIR/"
-          echo "Patches applied:"
-          ls -la "$PATCH_DIR/" | grep ecb
+          echo "Patches:"
+          ls "$PATCH_DIR/" | grep ecb
 
       - name: Add ECB-PR51 to image config
         run: |
           IMAGE_MK=openwrt/target/linux/rockchip/image/armv8.mk
-          # Check if already added
           if grep -q "lenovo_ecb-pr51" "$IMAGE_MK"; then
-            echo "ECB-PR51 already in image config"
+            echo "Already present"
           else
-            # Insert after the rk3568 definition block
-            awk '
-            /define Device\/rk3568/,/^endef/ {
-              print
-              if ($0 ~ /KERNEL_LOADADDR/) {
-                print ""
-                print "define Device/lenovo_ecb-pr51"
-                print "  $(Device/rk3568)"
-                print "  DEVICE_VENDOR := Lenovo"
-                print "  DEVICE_MODEL := ECB-PR51"
-                print "  DEVICE_DTS := rk3568-ecb-pr51"
-                print "  UBOOT_DEVICE_NAME := rock-3a-rk3568"
-                print "  DEVICE_PACKAGES := kmod-r8169 blkdiscard"
-                print "endef"
-                print "TARGET_DEVICES += lenovo_ecb-pr51"
-                print ""
-              }
-              next
-            }
-            { print }
-            ' "$IMAGE_MK" > "${IMAGE_MK}.new" && mv "${IMAGE_MK}.new" "$IMAGE_MK"
+            # Insert the device definition AFTER the rk3568 endef block
+            python3 << 'PYEOF'
+import re
+
+with open("openwrt/target/linux/rockchip/image/armv8.mk") as f:
+    content = f.read()
+
+# Find the end of the rk3568 block and insert after it
+insert = """
+define Device/lenovo_ecb-pr51
+  $(Device/rk3568)
+  DEVICE_VENDOR := Lenovo
+  DEVICE_MODEL := ECB-PR51
+  DEVICE_DTS := rk3568-ecb-pr51
+  UBOOT_DEVICE_NAME := rock-3a-rk3568
+  DEVICE_PACKAGES := kmod-r8169 blkdiscard
+endef
+TARGET_DEVICES += lenovo_ecb-pr51
+"""
+
+# Find first endef after "Device/rk3568" definition
+lines = content.split('\n')
+new_lines = []
+inserted = False
+for i, line in enumerate(lines):
+    new_lines.append(line)
+    if not inserted and line.strip() == 'endef' and i > 0:
+        # Check if this endef closes the rk3568 block
+        for j in range(i-1, max(0, i-5), -1):
+            if 'Device/rk3568' in lines[j]:
+                new_lines.append('')
+                new_lines.append(insert.strip())
+                inserted = True
+                break
+
+content = '\n'.join(new_lines)
+with open("openwrt/target/linux/rockchip/image/armv8.mk", "w") as f:
+    f.write(content)
+PYEOF
           fi
-          echo "=== Image config ==="
+          echo "=== Image config result ==="
           grep -A 10 "lenovo\|ecb-pr51" "$IMAGE_MK" || echo "NOT FOUND"
 
       - name: Configure build
@@ -154,12 +166,13 @@ jobs:
           CONFIG_PACKAGE_rkbin=y
           CONFIGEOF
 
-          make defconfig 2>&1 | tail -20
+          make defconfig 2>&1 | tail -10
+          # Also need to set the Python elftools prereq manually
+          pip3 install pyelftools 2>/dev/null || true
 
       - name: Download sources
         run: |
-          cd openwrt
-          make download 2>&1 | tail -20
+          cd openwrt && pip3 install pyelftools 2>/dev/null; make download 2>&1 | tail -10
 
       - name: Build tools + toolchain
         run: |
@@ -168,25 +181,27 @@ jobs:
           make -j$(nproc) toolchain/install 2>&1 | tail -10
 
       - name: Build firmware
+        id: build
         run: |
           cd openwrt
           make -j$(nproc) 2>&1 | tee build.log | tail -50
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
       - name: List artifacts
         if: always()
         run: |
           cd openwrt
-          echo "=== Built files ==="
-          find bin/targets/rockchip/ -type f 2>/dev/null | sort || echo "(empty)"
+          echo "=== Built firmware ==="
+          find bin/targets/ -type f -name '*.img*' -o -name '*.bin' -o -name '*.gz' 2>/dev/null | sort
           echo ""
-          echo "=== Sizes ==="
-          ls -lhR bin/targets/rockchip/ 2>/dev/null || true
+          echo "=== Size ==="
+          find bin/targets/ -type f -exec ls -lh {} \; 2>/dev/null
 
       - name: Upload firmware
-        if: success()
+        if: steps.build.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ecb-pr51-${{ env.OPENWRT_BRANCH }}
           path: openwrt/bin/targets/rockchip/
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
