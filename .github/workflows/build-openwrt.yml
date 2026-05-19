@@ -11,7 +11,6 @@ on:
         options:
           - main
           - openwrt-24.10
-
   push:
     branches: [ main ]
     paths:
@@ -31,8 +30,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout build config
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: builder
 
@@ -56,27 +54,55 @@ jobs:
         run: |
           git clone --depth 1 -b ${{ env.OPENWRT_BRANCH }} \
             ${{ env.OPENWRT_REPO }} openwrt
+          echo "Kernel version check:"
+          ls -d openwrt/target/linux/rockchip/patches-* 2>/dev/null
 
-      - name: Apply ECB-PR51 device tree
+      - name: Apply ECB-PR51 DTS as kernel patch
         run: |
-          DTS_DIR=openwrt/target/linux/rockchip/dts/rk356x
-          mkdir -p "$DTS_DIR"
-          cp builder/dts/rk3568-ecb-pr51.dts "$DTS_DIR/"
-          grep -q "ecb-pr51" "$DTS_DIR/Makefile" || \
-            sed -i '/dtb-y +=/a\\trk3568-ecb-pr51.dtb \\' "$DTS_DIR/Makefile"
-          echo "=== DTS Makefile ==="
-          cat "$DTS_DIR/Makefile"
+          # Determine patches directory
+          PATCH_DIR=$(ls -d openwrt/target/linux/rockchip/patches-* 2>/dev/null | tail -1)
+          if [ -z "$PATCH_DIR" ]; then
+            echo "ERROR: No patches directory found"
+            ls -la openwrt/target/linux/rockchip/
+            exit 1
+          fi
+          echo "Using patches dir: $PATCH_DIR"
+          cp builder/patches/100-arm64-dts-rockchip-add-lenovo-ecb-pr51.patch "$PATCH_DIR/"
+          cp builder/patches/101-arm64-dts-rockchip-add-ecb-pr51-makefile.patch "$PATCH_DIR/"
+          echo "Patches applied:"
+          ls -la "$PATCH_DIR/" | grep ecb
 
-      - name: Apply OpenWrt patches
+      - name: Add ECB-PR51 to image config
         run: |
-          cd openwrt
-          for patch in ../builder/patches/*.patch; do
-            [ -f "$patch" ] || continue
-            echo "=== Applying: $(basename $patch) ==="
-            patch -p1 < "$patch" || echo "WARNING: patch $(basename $patch) may already be applied"
-          done
+          IMAGE_MK=openwrt/target/linux/rockchip/image/armv8.mk
+          # Check if already added
+          if grep -q "lenovo_ecb-pr51" "$IMAGE_MK"; then
+            echo "ECB-PR51 already in image config"
+          else
+            # Insert after the rk3568 definition block
+            awk '
+            /define Device\/rk3568/,/^endef/ {
+              print
+              if ($0 ~ /KERNEL_LOADADDR/) {
+                print ""
+                print "define Device/lenovo_ecb-pr51"
+                print "  $(Device/rk3568)"
+                print "  DEVICE_VENDOR := Lenovo"
+                print "  DEVICE_MODEL := ECB-PR51"
+                print "  DEVICE_DTS := rk3568-ecb-pr51"
+                print "  UBOOT_DEVICE_NAME := rock-3a-rk3568"
+                print "  DEVICE_PACKAGES := kmod-r8169 blkdiscard"
+                print "endef"
+                print "TARGET_DEVICES += lenovo_ecb-pr51"
+                print ""
+              }
+              next
+            }
+            { print }
+            ' "$IMAGE_MK" > "${IMAGE_MK}.new" && mv "${IMAGE_MK}.new" "$IMAGE_MK"
+          fi
           echo "=== Image config ==="
-          grep -A 8 "lenovo\|ecb-pr51" target/linux/rockchip/image/armv8.mk || true
+          grep -A 10 "lenovo\|ecb-pr51" "$IMAGE_MK" || echo "NOT FOUND"
 
       - name: Configure build
         run: |
@@ -138,29 +164,25 @@ jobs:
       - name: Build tools + toolchain
         run: |
           cd openwrt
-          make -j$(nproc) tools/install 2>&1 | tail -20
-          make -j$(nproc) toolchain/install 2>&1 | tail -20
+          make -j$(nproc) tools/install 2>&1 | tail -10
+          make -j$(nproc) toolchain/install 2>&1 | tail -10
 
       - name: Build firmware
-        id: build
         run: |
           cd openwrt
           make -j$(nproc) 2>&1 | tee build.log | tail -50
 
-      - name: Show build output
+      - name: List artifacts
         if: always()
         run: |
           cd openwrt
-          echo "=== Build log (last 50 lines) ==="
-          tail -50 build.log 2>/dev/null || true
+          echo "=== Built files ==="
+          find bin/targets/rockchip/ -type f 2>/dev/null | sort || echo "(empty)"
           echo ""
-          echo "=== Built firmware ==="
-          find bin/targets/rockchip/ -type f 2>/dev/null | sort
-          echo ""
-          echo "=== Image directory ==="
-          ls -lhR bin/targets/rockchip/ 2>/dev/null || echo "(empty)"
+          echo "=== Sizes ==="
+          ls -lhR bin/targets/rockchip/ 2>/dev/null || true
 
-      - name: Upload firmware artifacts
+      - name: Upload firmware
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -168,27 +190,3 @@ jobs:
           path: openwrt/bin/targets/rockchip/
           retention-days: 30
           if-no-files-found: error
-
-      - name: Create release
-        if: github.ref == 'refs/heads/main' && success()
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: "OpenWrt ECB-PR51 Build #${{ github.run_number }}"
-          body: |
-            Auto-built OpenWrt firmware for **Lenovo ECB-PR51** (Leez SBC PR51 / RK3568)
-
-            - Branch: `${{ env.OPENWRT_BRANCH }}`
-            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-            ## 🔥 刷机说明
-            1. 到 Artifacts 下载 zip 包，解压
-            2. 找到 `rockchip/armv8/` 目录下的 `*sysupgrade.img.gz`
-            3. 解压得 `.img` 文件
-            4. 用 **BalenaEtcher** 或 `dd` 写入 TF 卡
-            5. 插入 ECB-PR51，从 TF 卡启动
-            6. 默认 IP: `192.168.1.1`，无密码
-          files: |
-            openwrt/bin/targets/rockchip/**/*.gz
-          generate_release_notes: false
-          make_latest: true

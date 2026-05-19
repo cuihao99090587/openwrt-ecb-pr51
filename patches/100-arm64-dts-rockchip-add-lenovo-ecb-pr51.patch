@@ -1,27 +1,23 @@
 From: Xiaoxue <xiaoxue@users.noreply.github.com>
 Date: Tue, 19 May 2026 09:30:00 +0800
-Subject: [PATCH] rockchip: add device tree for Lenovo ECB-PR51 (RK3568)
+Subject: [PATCH] arm64: dts: rockchip: add Lenovo ECB-PR51 (RK3568)
 
-Add device tree source for the Lenovo ECB-PR51 (Leez SBC PR51) single
-board computer based on Rockchip RK3568.
+Add device tree support for the Lenovo ECB-PR51 single board computer
+based on the Rockchip RK3568 SoC.
 
 Specification:
 - Rockchip RK3568 quad-core Cortex-A55 @ 2.0 GHz
-- 2/4/8 GB LPDDR4 RAM
-- 16/32/64/128 GB eMMC
-- MicroSD card slot
-- Dual Gigabit Ethernet (RGMII)
-- PCIe 2.1 x2 slot
-- HDMI, eDP, LVDS display outputs
+- 2/4/8 GB LPDDR4 RAM | 16/32/64/128 GB eMMC
+- MicroSD card slot | Dual Gigabit Ethernet (RGMII)
+- PCIe 2.1 x2 slot | HDMI, eDP, LVDS display
 - 2x USB 2.0, 1x USB 3.0, USB Type-C
-- MIPI CSI camera input
-- 40-pin GPIO header
+- MIPI CSI camera | 40-pin GPIO header
 
 Signed-off-by: Xiaoxue <xiaoxue@users.noreply.github.com>
 
 --- /dev/null
-+++ b/target/linux/rockchip/dts/rk356x/rk3568-ecb-pr51.dts
-@@ -0,0 +1,241 @@
++++ b/arch/arm64/boot/dts/rockchip/rk3568-ecb-pr51.dts
+@@ -0,0 +1,235 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Device Tree file for Lenovo ECB-PR51 (Leez SBC PR51) - RK3568

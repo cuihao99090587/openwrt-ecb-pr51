@@ -1,0 +1,14 @@
+From: Xiaoxue <xiaoxue@users.noreply.github.com>
+Date: Tue, 19 May 2026 09:30:00 +0800
+Subject: [PATCH] arm64: dts: rockchip: add ECB-PR51 to Makefile
+
+Signed-off-by: Xiaoxue <xiaoxue@users.noreply.github.com>
+
+--- a/arch/arm64/boot/dts/rockchip/Makefile
++++ b/arch/arm64/boot/dts/rockchip/Makefile
+@@ -85,6 +85,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-bpi-r2-pro.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-easepi-r1.dtb
++dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-ecb-pr51.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-fastrhino-r66s.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-hinlink-h66k.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-hinlink-h68k.dtb
